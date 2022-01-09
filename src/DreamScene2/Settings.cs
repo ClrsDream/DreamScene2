@@ -5,12 +5,10 @@ namespace DreamScene2
 {
     public class Settings
     {
-        static string settingsFilePath = Helper.GetPath("settings.xml");
+        static string settingsFilePath = Helper.GetPathForAppFolder("settings.xml");
         static Settings s_settings;
 
-        private Settings()
-        {
-        }
+        private Settings() { }
 
         public bool FirstRun { get; set; } = true;
         public bool AutoPlay { get; set; }
@@ -21,6 +19,8 @@ namespace DreamScene2
 
         public bool IsMuted { get; set; }
         public int Volume { get; set; } = 3;
+        public bool DisableWebSecurity { get; set; }
+        public bool DesktopInteraction { get; set; } = true;
 
         public static Settings Load()
         {

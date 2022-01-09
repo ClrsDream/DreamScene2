@@ -15,13 +15,17 @@
 extern "C" {
 #endif
 
-DS2NATIVE_API ULONGLONG WINAPI DS2_GetLastInputTickCount(void);
-DS2NATIVE_API HWND WINAPI DS2_GetDesktopWindowHandle(void);
-DS2NATIVE_API int WINAPI DS2_TestScreen(RECT rect);
-DS2NATIVE_API void WINAPI DS2_SetWindowPosition(HWND hWnd, RECT rect);
-DS2NATIVE_API void WINAPI DS2_RestoreLastWindowPosition(void);
-DS2NATIVE_API void WINAPI DS2_RefreshDesktop(void);
-DS2NATIVE_API void WINAPI DS2_RefreshDesktop2(void);
+    DS2NATIVE_API ULONGLONG WINAPI DS2_GetLastInputTickCount(void);
+    DS2NATIVE_API HWND WINAPI DS2_GetDesktopWindowHandle(void);
+    DS2NATIVE_API int WINAPI DS2_TestScreen(RECT rect);
+    DS2NATIVE_API void WINAPI DS2_SetWindowPosition(HWND hWnd, RECT rect);
+    DS2NATIVE_API void WINAPI DS2_RestoreLastWindowPosition(void);
+    DS2NATIVE_API void WINAPI DS2_RefreshDesktop(BOOL animated = FALSE);
+    DS2NATIVE_API void WINAPI DS2_ToggleShowDesktopIcons(void);
+    DS2NATIVE_API BOOL WINAPI DS2_IsVisibleDesktopIcons(void);
+    DS2NATIVE_API BOOL WINAPI DS2_StartForwardMouseKeyboardMessage(HWND hWnd);
+    DS2NATIVE_API void WINAPI DS2_EndForwardMouseKeyboardMessage(void);
+    DS2NATIVE_API void WINAPI DS2_ToggleProcess(DWORD dwPID, BOOL bResumeProcess);
 
 #ifdef __cplusplus
 }

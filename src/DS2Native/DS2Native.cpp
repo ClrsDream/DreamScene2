@@ -3,8 +3,7 @@
 
 #include "framework.h"
 #include "DS2Native.h"
-
-#include <Windows.h>
+#include <tchar.h>
 #include <ShlObj.h>
 
 
@@ -34,7 +33,7 @@ HWND WINAPI DS2_GetDesktopWindowHandle(void) {
             return FALSE;
         }
         return TRUE;
-    }, NULL);
+        }, NULL);
 
     return g_hWnd;
 }
@@ -101,8 +100,8 @@ void WINAPI DS2_SetWindowPosition(HWND hWnd, RECT rect) {
         HWND_TOP,
         rect.left,
         rect.top,
-        rect.right-rect.left,
-        rect.bottom-rect.top,
+        rect.right - rect.left,
+        rect.bottom - rect.top,
         SWP_SHOWWINDOW);
 }
 
@@ -115,39 +114,240 @@ void WINAPI DS2_RestoreLastWindowPosition(void) {
             HWND_TOP,
             s_lwi.rect.left,
             s_lwi.rect.top,
-            s_lwi.rect.right-s_lwi.rect.left,
-            s_lwi.rect.bottom-s_lwi.rect.top,
+            s_lwi.rect.right - s_lwi.rect.left,
+            s_lwi.rect.bottom - s_lwi.rect.top,
             SWP_SHOWWINDOW);
     }
     s_lwi = { 0 };
 }
 
 
-void WINAPI DS2_RefreshDesktop(void) {
-    char path[MAX_PATH + 1] = { 0 };
-    SystemParametersInfo(SPI_GETDESKWALLPAPER, MAX_PATH, &path, 0);
-    SystemParametersInfo(SPI_SETDESKWALLPAPER, 0, path, 0);
+void WINAPI DS2_RefreshDesktop(BOOL animated) {
+    if (animated) {
+        HRESULT nRet = CoInitialize(NULL);
+        if (SUCCEEDED(nRet)) {
+            IDesktopWallpaper* pDesktopWallpaper = NULL;
+            nRet = CoCreateInstance(CLSID_DesktopWallpaper, 0, CLSCTX_LOCAL_SERVER, IID_IDesktopWallpaper, (void**)&pDesktopWallpaper);
+            if (SUCCEEDED(nRet)) {
+                LPWSTR path = NULL;
+                pDesktopWallpaper->GetWallpaper(NULL, &path);
+                if (path && wcslen(path)) {
+                    pDesktopWallpaper->SetWallpaper(NULL, path);
+                }
+                else {
+                    COLORREF color;
+                    pDesktopWallpaper->GetBackgroundColor(&color);
+                    pDesktopWallpaper->SetBackgroundColor(color);
+                }
+                pDesktopWallpaper->Release();
+            }
+            CoUninitialize();
+        }
+    }
+    else {
+        char path[MAX_PATH + 1] = { 0 };
+        SystemParametersInfo(SPI_GETDESKWALLPAPER, MAX_PATH, &path, 0);
+        SystemParametersInfo(SPI_SETDESKWALLPAPER, 0, path, 0);
+    }
 }
 
 
-void WINAPI DS2_RefreshDesktop2(void) {
-    HRESULT nRet = CoInitialize(NULL);
-    if (SUCCEEDED(nRet)) {
-        IDesktopWallpaper* pDesktopWallpaper = NULL;
-        nRet = CoCreateInstance(CLSID_DesktopWallpaper, 0, CLSCTX_LOCAL_SERVER, IID_IDesktopWallpaper, (void**)&pDesktopWallpaper);
-        if (SUCCEEDED(nRet)) {
-            LPWSTR path = NULL;
-            pDesktopWallpaper->GetWallpaper(NULL, &path);
-            if (path && wcslen(path)) {
-                pDesktopWallpaper->SetWallpaper(NULL, path);
+HWND GetDesktopListViewHWND()
+{
+    HWND hDesktopListView = NULL;
+    HWND hWorkerW = NULL;
+
+    HWND hProgman = FindWindow(_T("Progman"), NULL);
+    HWND hDesktopWnd = GetDesktopWindow();
+
+    // If the main Program Manager window is found
+    if (hProgman)
+    {
+        // Get and load the main List view window containing the icons (found using Spy++).
+        HWND hShellViewWin = FindWindowEx(hProgman, NULL, _T("SHELLDLL_DefView"), NULL);
+        if (hShellViewWin)
+            hDesktopListView = FindWindowEx(hShellViewWin, NULL, _T("SysListView32"), NULL);
+        else
+            // When this fails (happens in Windows-7 when picture rotation is turned ON), then look for the WorkerW windows list to get the
+            // correct desktop list handle.
+            // As there can be multiple WorkerW windows, so iterate through all to get the correct one
+            do
+            {
+                hWorkerW = FindWindowEx(hDesktopWnd, hWorkerW, _T("WorkerW"), NULL);
+                hShellViewWin = FindWindowEx(hWorkerW, NULL, _T("SHELLDLL_DefView"), NULL);
+            } while (!hShellViewWin && hWorkerW);
+
+            // Get the ListView control
+            hDesktopListView = FindWindowEx(hShellViewWin, NULL, _T("SysListView32"), NULL);
+    }
+
+    return hDesktopListView;
+}
+
+
+BOOL WINAPI DS2_IsVisibleDesktopIcons(void) {
+    HWND hWnd = GetDesktopListViewHWND();
+    WINDOWINFO info = { 0 };
+    GetWindowInfo(hWnd, &info);
+    return (info.dwStyle & WS_VISIBLE) == WS_VISIBLE;
+}
+
+
+void WINAPI DS2_ToggleShowDesktopIcons(void) {
+    // Thanks: https://stackoverflow.com/a/56812642
+    static HWND g_hShellViewWin = NULL;
+    if (!g_hShellViewWin) {
+        HWND hProgman = FindWindow("Progman", "Program Manager");
+        if (hProgman)
+        {
+            // Get and load the main List view window containing the icons.
+            g_hShellViewWin = FindWindowEx(hProgman, NULL, "SHELLDLL_DefView", NULL);
+            if (!g_hShellViewWin)
+            {
+                HWND hWorkerW = NULL;
+                HWND hDesktopWnd = GetDesktopWindow();
+
+                // When this fails (picture rotation is turned ON, toggledesktop shell cmd used ), then look for the WorkerW windows list to get the
+                // correct desktop list handle.
+                // As there can be multiple WorkerW windows, iterate through all to get the correct one
+                do
+                {
+                    hWorkerW = FindWindowEx(hDesktopWnd, hWorkerW, "WorkerW", NULL);
+                    g_hShellViewWin = FindWindowEx(hWorkerW, NULL, "SHELLDLL_DefView", NULL);
+                } while (!g_hShellViewWin && hWorkerW);
             }
-            else {
-                COLORREF color;
-                pDesktopWallpaper->GetBackgroundColor(&color);
-                pDesktopWallpaper->SetBackgroundColor(color);
-            }
-            pDesktopWallpaper->Release();
         }
-        CoUninitialize();
+    }
+
+    if (g_hShellViewWin) {
+        int toggleDesktopCommand = 0x7402;
+        SendMessage(g_hShellViewWin, WM_COMMAND, toggleDesktopCommand, NULL);
+    }
+}
+
+
+BOOL DS2_IsDesktop(void) {
+    // Thanks: https://stackoverflow.com/a/56812642
+    HWND hProgman = FindWindow("Progman", "Program Manager");
+    HWND hWorkerW = NULL;
+
+    // Get and load the main List view window containing the icons.
+    HWND   hShellViewWin = FindWindowEx(hProgman, NULL, "SHELLDLL_DefView", NULL);
+    if (!hShellViewWin)
+    {
+        HWND hDesktopWnd = GetDesktopWindow();
+
+        // When this fails (picture rotation is turned ON, toggledesktop shell cmd used ), then look for the WorkerW windows list to get the
+        // correct desktop list handle.
+        // As there can be multiple WorkerW windows, iterate through all to get the correct one
+        do
+        {
+            hWorkerW = FindWindowEx(hDesktopWnd, hWorkerW, "WorkerW", NULL);
+            hShellViewWin = FindWindowEx(hWorkerW, NULL, "SHELLDLL_DefView", NULL);
+        } while (!hShellViewWin && hWorkerW);
+    }
+
+    HWND hForegroundWindow = GetForegroundWindow();
+    return hForegroundWindow == hWorkerW || hForegroundWindow == hProgman;
+}
+
+
+HWND g_hWnd = NULL;
+
+LRESULT CALLBACK LowLevelKeyboardProc(int    nCode, WPARAM wParam, LPARAM lParam) {
+    if (DS2_IsDesktop()) {
+        KBDLLHOOKSTRUCT* p = (KBDLLHOOKSTRUCT*)lParam;
+
+        if (wParam == WM_KEYDOWN) {
+            int lp = 1 | (p->scanCode << 16) | (1 << 24) | (0 << 29) | (0 << 30) | (0 << 31);
+            PostMessage(g_hWnd, (UINT)wParam, p->vkCode, lp);
+        }
+        else if (wParam == WM_KEYUP) {
+            int lp = 1 | (p->scanCode << 16) | (1 << 24) | (0 << 29) | (1 << 30) | (1 << 31);
+            PostMessage(g_hWnd, (UINT)wParam, p->vkCode, lp);
+        }
+    }
+
+    return CallNextHookEx(NULL, nCode, wParam, lParam);
+}
+
+
+LRESULT CALLBACK LowLevelMouseProc(int    nCode, WPARAM wParam, LPARAM lParam) {
+    MSLLHOOKSTRUCT* p = (MSLLHOOKSTRUCT*)lParam;
+    LONG lp = MAKELONG(p->pt.x, p->pt.y);
+
+    if (DS2_IsDesktop()) {
+        if (wParam == WM_MOUSEMOVE) {
+            PostMessage(g_hWnd, (UINT)wParam, MK_XBUTTON1, lp);
+        }
+        else  if (wParam == WM_LBUTTONDOWN || wParam == WM_LBUTTONUP) {
+            PostMessage(g_hWnd, (UINT)wParam, MK_LBUTTON, lp);
+        }
+        else  if (wParam == WM_MOUSEWHEEL) {
+            // TODO:
+        }
+    }
+    else  if (wParam == WM_MOUSEMOVE) {
+        RECT rect;
+        GetWindowRect(GetForegroundWindow(), &rect);
+
+        if (!PtInRect(&rect, p->pt)) {
+            PostMessage(g_hWnd, (UINT)wParam, MK_XBUTTON1, lp);
+        }
+    }
+
+    return CallNextHookEx(NULL, nCode, wParam, lParam);
+}
+
+
+HHOOK g_hLowLevelMouseHook = NULL;
+HHOOK g_hLowLevelKeyboardHook = NULL;
+
+BOOL WINAPI DS2_StartForwardMouseKeyboardMessage(HWND hWnd) {
+    g_hWnd = hWnd;
+
+    HMODULE hm = GetModuleHandle(NULL);
+    g_hLowLevelMouseHook = SetWindowsHookEx(WH_MOUSE_LL, LowLevelMouseProc, hm, NULL);
+    if (!g_hLowLevelMouseHook) {
+        return FALSE;
+    }
+
+    g_hLowLevelKeyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, hm, NULL);
+    return TRUE;
+}
+
+
+void WINAPI DS2_EndForwardMouseKeyboardMessage(void) {
+    if (g_hLowLevelMouseHook) {
+        UnhookWindowsHookEx(g_hLowLevelMouseHook);
+        g_hLowLevelMouseHook = NULL;
+    }
+
+    if (g_hLowLevelKeyboardHook) {
+        UnhookWindowsHookEx(g_hLowLevelKeyboardHook);
+        g_hLowLevelKeyboardHook = NULL;
+    }
+}
+
+
+typedef LONG(NTAPI* NtSuspendProcess)(IN HANDLE ProcessHandle);
+typedef LONG(NTAPI* NtResumeProcess)(IN HANDLE ProcessHandle);
+
+void WINAPI DS2_ToggleProcess(DWORD dwPID, BOOL bResumeProcess) {
+    HMODULE hModule = GetModuleHandle("ntdll");
+    if (hModule) {
+        HANDLE processHandle = OpenProcess(PROCESS_SUSPEND_RESUME, FALSE, dwPID);
+
+        if (bResumeProcess)
+        {
+            NtResumeProcess pfnNtResumeProcess = (NtResumeProcess)GetProcAddress(hModule, "NtResumeProcess");
+            pfnNtResumeProcess(processHandle);
+        }
+        else
+        {
+            NtSuspendProcess pfnNtSuspendProcess = (NtSuspendProcess)GetProcAddress(hModule, "NtSuspendProcess");
+            pfnNtSuspendProcess(processHandle);
+        }
+        CloseHandle(processHandle);
     }
 }

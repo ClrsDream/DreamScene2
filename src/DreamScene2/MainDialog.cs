@@ -1,10 +1,11 @@
-﻿using System;
+using Microsoft.Web.WebView2.Core;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using Microsoft.Web.WebView2.Core;
 
 namespace DreamScene2
 {
@@ -13,7 +14,7 @@ namespace DreamScene2
         VideoWindow _videoWindow;
         WebWindow _webWindow;
         IntPtr _desktopWindowHandle;
-        string _recentPath = Helper.GetPath("recent.txt");
+        string _recentPath = Helper.GetPathForAppFolder("recent.txt");
         List<string> _recentFiles = new List<string>();
         bool _isPlaying;
         PerformanceCounter _performanceCounter;
@@ -21,36 +22,43 @@ namespace DreamScene2
         Screen _screen;
         int _screenIndex;
         IntPtr _windowHandle;
+        bool _isSuspend;
+        uint _d3dRenderingSubProcessPid;
+
+        string[] HtmlFileTypes = new string[] { ".htm", ".html", ".mhtml" };
+        string[] VideoFileTypes = new string[] { ".mp4", ".mov" };
 
         public MainDialog()
         {
             InitializeComponent();
+            this.Text = Constant.MainWindowTitle;
             this.Icon = DreamScene2.Properties.Resources.icon;
             notifyIcon1.Icon = this.Icon;
             trackBar1.Value = _settings.Volume;
+            toolStripMenuItem3.Checked = checkMute.Checked = _settings.IsMuted;
+            toolStripMenuItem6.Checked = checkAutoPlay.Checked = _settings.AutoPlay;
             toolStripMenuItem23.Checked = _settings.AutoPause1;
             toolStripMenuItem24.Checked = _settings.AutoPause2;
             toolStripMenuItem25.Checked = _settings.AutoPause3;
-            toolStripMenuItem3.Checked = checkBox1.Checked = _settings.IsMuted;
+            toolStripMenuItem26.Checked = _settings.DisableWebSecurity;
+            toolStripMenuItem27.Checked = _settings.DesktopInteraction;
         }
 
 
         #region 私有方法
 
-        void PlayVideo()
+        static bool TryGetWebView2Version(out string version)
         {
-            _isPlaying = true;
-            _videoWindow.Play();
-            button4.Text = "暂停";
-            toolStripMenuItem2.Text = "暂停";
-        }
-
-        void PauseVideo()
-        {
-            _isPlaying = false;
-            _videoWindow.Pause();
-            button4.Text = "播放";
-            toolStripMenuItem2.Text = "播放";
+            try
+            {
+                version = CoreWebView2Environment.GetAvailableBrowserVersionString();
+                return true;
+            }
+            catch
+            {
+                version = null;
+                return false;
+            }
         }
 
         void SaveRecentFile(string path)
@@ -65,6 +73,20 @@ namespace DreamScene2
             }
         }
 
+        void PlayVideo()
+        {
+            _isPlaying = true;
+            _videoWindow.Play();
+            toolStripMenuItem2.Text = btnPlay.Text = "暂停";
+        }
+
+        void PauseVideo()
+        {
+            _isPlaying = false;
+            _videoWindow.Pause();
+            toolStripMenuItem2.Text = btnPlay.Text = "播放";
+        }
+
         void OpenFile(string path)
         {
             Uri uri = new Uri(path);
@@ -76,7 +98,7 @@ namespace DreamScene2
             }
             else if (uri.Scheme == "file" && File.Exists(path))
             {
-                if (Path.GetExtension(path) == ".html")
+                if (HtmlFileTypes.Contains(Path.GetExtension(path).ToLower()))
                     OpenWeb(uri.AbsoluteUri);
                 else
                     OpenVideo(path);
@@ -101,28 +123,33 @@ namespace DreamScene2
             _videoWindow.Source = new Uri(path, UriKind.Absolute);
             _videoWindow.Play();
 
-            button4.Enabled = true;
-            button5.Enabled = true;
-            checkBox1.Enabled = true;
+            toolStripMenuItem2.Enabled = btnPlay.Enabled = true;
+            toolStripMenuItem3.Enabled = checkMute.Enabled = true;
+            toolStripMenuItem5.Enabled = btnClose.Enabled = true;
             trackBar1.Enabled = !_settings.IsMuted;
 
-            toolStripMenuItem2.Enabled = true;
-            toolStripMenuItem3.Enabled = true;
-            toolStripMenuItem5.Enabled = true;
-
             _isPlaying = true;
-            button4.Text = "暂停";
-            toolStripMenuItem2.Text = "暂停";
+            toolStripMenuItem2.Text = btnPlay.Text = "暂停";
             timer1.Enabled = _settings.AutoPause1 || _settings.AutoPause2 || _settings.AutoPause3;
         }
 
         void OpenWeb(string url)
         {
+            if (!TryGetWebView2Version(out _))
+            {
+                MessageBox.Show("打开网页功能需要 WebView2 支持。请在托盘图标找到 DreamScene2 然后右键菜单，依次点击 [打开 URL] > [安装 WebView2...] 安装");
+                return;
+            }
+
             CloseWindow(WindowType.Web);
 
             if (_webWindow == null)
             {
-                _webWindow = new WebWindow();
+                WebWindowOptions webWindowOptions = new WebWindowOptions();
+                webWindowOptions.UserDataFolder = Helper.GetPathForAppFolder("");
+                webWindowOptions.DisableWebSecurity = _settings.DisableWebSecurity;
+
+                _webWindow = new WebWindow(webWindowOptions);
                 _webWindow.SetPosition(_screen.Bounds);
                 _webWindow.Show();
 
@@ -130,8 +157,21 @@ namespace DreamScene2
             }
 
             _webWindow.Source = new Uri(url);
-            button5.Enabled = true;
-            toolStripMenuItem5.Enabled = true;
+
+            toolStripMenuItem2.Enabled = btnPlay.Enabled = true;
+            toolStripMenuItem3.Enabled = checkMute.Enabled = true;
+            toolStripMenuItem5.Enabled = btnClose.Enabled = true;
+
+            toolStripMenuItem2.Text = btnPlay.Text = "暂停";
+
+            if (_settings.DesktopInteraction)
+            {
+                Task.Run(async () =>
+                {
+                    await Task.Delay(500);
+                    this.Invoke((Action)ForwardMessage);
+                });
+            }
         }
 
         void SetWindow(IntPtr hWnd)
@@ -146,8 +186,7 @@ namespace DreamScene2
                 PInvoke.SetParent(hWnd, _desktopWindowHandle);
             }
 
-            button5.Enabled = true;
-            toolStripMenuItem5.Enabled = true;
+            toolStripMenuItem5.Enabled = btnClose.Enabled = true;
         }
 
         enum WindowType
@@ -162,28 +201,44 @@ namespace DreamScene2
 
         void CloseWindow(WindowType xc)
         {
-            button5.Enabled = false;
-            toolStripMenuItem5.Enabled = false;
+            toolStripMenuItem5.Enabled = btnClose.Enabled = false;
+
+            if (lxc == WindowType.Web)
+            {
+                if (_settings.DesktopInteraction)
+                {
+                    PInvoke.DS2_EndForwardMouseKeyboardMessage();
+                }
+
+                if (_isSuspend)
+                {
+                    PInvoke.DS2_ToggleProcess(_d3dRenderingSubProcessPid, 1);
+                    _isSuspend = false;
+                }
+            }
 
             if (lxc == WindowType.Video && lxc != xc)
             {
                 timer1.Enabled = false;
                 _isPlaying = false;
-                button4.Text = "播放";
-                toolStripMenuItem2.Text = "播放";
+                toolStripMenuItem2.Text = btnPlay.Text = "播放";
 
-                button4.Enabled = false;
-                checkBox1.Enabled = false;
+                toolStripMenuItem2.Enabled = btnPlay.Enabled = false;
+                toolStripMenuItem3.Enabled = checkMute.Enabled = false;
+                toolStripMenuItem5.Enabled = btnClose.Enabled = false;
                 trackBar1.Enabled = false;
-
-                toolStripMenuItem2.Enabled = false;
-                toolStripMenuItem3.Enabled = false;
 
                 _videoWindow.Close();
                 _videoWindow = null;
             }
             else if (lxc == WindowType.Web && lxc != xc)
             {
+                toolStripMenuItem2.Text = btnPlay.Text = "播放";
+
+                toolStripMenuItem2.Enabled = btnPlay.Enabled = false;
+                toolStripMenuItem3.Enabled = checkMute.Enabled = false;
+                toolStripMenuItem5.Enabled = btnClose.Enabled = false;
+
                 _webWindow.Close();
                 _webWindow = null;
             }
@@ -197,6 +252,15 @@ namespace DreamScene2
 
             GC.Collect();
             PInvoke.DS2_RefreshDesktop();
+        }
+
+        void ForwardMessage()
+        {
+            IntPtr hWnd = _webWindow.GetChromeWidgetWin1Handle();
+            if (hWnd != IntPtr.Zero)
+            {
+                PInvoke.DS2_StartForwardMouseKeyboardMessage(hWnd);
+            }
         }
 
         #endregion
@@ -216,8 +280,11 @@ namespace DreamScene2
             _desktopWindowHandle = PInvoke.DS2_GetDesktopWindowHandle();
             if (_desktopWindowHandle == IntPtr.Zero)
             {
-                button2.Enabled = false;
+                btnOpenFile.Enabled = false;
+                checkAutoPlay.Enabled = false;
+                notifyIcon1.Visible = false;
                 label1.Visible = true;
+                return;
             }
 
             if (File.Exists(_recentPath))
@@ -226,20 +293,18 @@ namespace DreamScene2
                 _recentFiles.AddRange(paths);
             }
 
-            if (_settings.AutoPlay)
-            {
-                checkBox2.Checked = true;
-                toolStripMenuItem6.Checked = true;
-
-                if (_recentFiles.Count != 0)
-                    OpenFile(_recentFiles[0]);
-            }
-
-            toolStripMenuItem12.Checked = Helper.CheckStartOnBoot();
+            if (_settings.AutoPlay && _recentFiles.Count != 0)
+                OpenFile(_recentFiles[0]);
         }
 
         private void Form1_FormClosing(object sender, FormClosingEventArgs e)
         {
+            if (_desktopWindowHandle == IntPtr.Zero)
+            {
+                Environment.Exit(0);
+                return;
+            }
+
             if (e.CloseReason == CloseReason.UserClosing)
             {
                 e.Cancel = true;
@@ -258,38 +323,64 @@ namespace DreamScene2
             }
         }
 
-        private void button2_Click(object sender, EventArgs e)
+        private void btnOpenFile_Click(object sender, EventArgs e)
         {
             OpenFileDialog openFileDialog = new OpenFileDialog();
-            openFileDialog.Filter = "Video Files (*.mp4;*.mov)|*.mp4;*.mov|HTML Files (*.html)|*.html";
+            var htmlTypes = string.Join(";", HtmlFileTypes.Select(x => $"*{x}"));
+            var videoTypes = string.Join(";", VideoFileTypes.Select(x => $"*{x}"));
+            var allTypes = $"{videoTypes};{htmlTypes}";
+            openFileDialog.Filter = $"All Files|{allTypes}|Video Files|{videoTypes}|HTML Files|{htmlTypes}";
             if (openFileDialog.ShowDialog() == DialogResult.OK)
                 OpenFile(openFileDialog.FileName);
         }
 
-        private void button4_Click(object sender, EventArgs e)
+        private void btnPlay_Click(object sender, EventArgs e)
         {
-            if (_isPlaying)
+            if (_videoWindow != null)
             {
-                timer1.Enabled = false;
-                PauseVideo();
+                if (_isPlaying)
+                {
+                    timer1.Enabled = false;
+                    PauseVideo();
+                }
+                else
+                {
+                    PlayVideo();
+                    timer1.Enabled = _settings.AutoPause1 || _settings.AutoPause2 || _settings.AutoPause3;
+                }
             }
-            else
+
+            if (_webWindow != null)
             {
-                PlayVideo();
-                timer1.Enabled = _settings.AutoPause1 || _settings.AutoPause2 || _settings.AutoPause3;
+                if (_isSuspend)
+                {
+                    PInvoke.DS2_ToggleProcess(_d3dRenderingSubProcessPid, 1);
+                    _isSuspend = false;
+                    toolStripMenuItem2.Text = btnPlay.Text = "暂停";
+                }
+                else
+                {
+                    _d3dRenderingSubProcessPid = _webWindow.GetD3DRenderingSubProcessPid();
+                    if (_d3dRenderingSubProcessPid != 0)
+                    {
+                        PInvoke.DS2_ToggleProcess(_d3dRenderingSubProcessPid, 0);
+                        _isSuspend = true;
+                        toolStripMenuItem2.Text = btnPlay.Text = "播放";
+                    }
+                }
             }
         }
 
-        private void checkBox1_Click(object sender, EventArgs e)
+        private void checkMute_Click(object sender, EventArgs e)
         {
-            _settings.IsMuted = toolStripMenuItem3.Checked = checkBox1.Checked;
+            _settings.IsMuted = toolStripMenuItem3.Checked = checkMute.Checked;
             trackBar1.Enabled = !_settings.IsMuted;
             _videoWindow.IsMuted = _settings.IsMuted;
         }
 
-        private void checkBox2_Click(object sender, EventArgs e)
+        private void checkAutoPlay_Click(object sender, EventArgs e)
         {
-            _settings.AutoPlay = toolStripMenuItem6.Checked = checkBox2.Checked;
+            _settings.AutoPlay = toolStripMenuItem6.Checked = checkAutoPlay.Checked;
         }
 
         private void trackBar1_Scroll(object sender, EventArgs e)
@@ -298,7 +389,7 @@ namespace DreamScene2
             _videoWindow.Volume = _settings.Volume / 10.0;
         }
 
-        private void button5_Click(object sender, EventArgs e)
+        private void btnClose_Click(object sender, EventArgs e)
         {
             CloseWindow(WindowType.None);
         }
@@ -404,6 +495,13 @@ namespace DreamScene2
 
         #region 菜单事件
 
+        private void contextMenuStrip1_Opening(object sender, System.ComponentModel.CancelEventArgs e)
+        {
+            toolStripMenuItem12.Checked = Helper.CheckStartOnBoot();
+            int val = PInvoke.DS2_IsVisibleDesktopIcons();
+            toolStripMenuItem13.Text = val != 0 ? "隐藏桌面图标" : "显示桌面图标";
+        }
+
         private void toolStripMenuItem1_Click(object sender, EventArgs e)
         {
             notifyIcon1_MouseDoubleClick(null, null);
@@ -411,13 +509,13 @@ namespace DreamScene2
 
         private void toolStripMenuItem2_Click(object sender, EventArgs e)
         {
-            button4_Click(null, null);
+            btnPlay_Click(null, null);
         }
 
         private void toolStripMenuItem3_Click(object sender, EventArgs e)
         {
-            checkBox1.Checked = !checkBox1.Checked;
-            checkBox1_Click(null, null);
+            checkMute.Checked = !checkMute.Checked;
+            checkMute_Click(null, null);
         }
 
         private void toolStripMenuItem4_Click(object sender, EventArgs e)
@@ -427,13 +525,13 @@ namespace DreamScene2
 
         private void toolStripMenuItem5_Click(object sender, EventArgs e)
         {
-            button5_Click(null, null);
+            btnClose_Click(null, null);
         }
 
         private void toolStripMenuItem6_Click(object sender, EventArgs e)
         {
-            checkBox2.Checked = !checkBox2.Checked;
-            checkBox2_Click(null, null);
+            checkAutoPlay.Checked = !checkAutoPlay.Checked;
+            checkAutoPlay_Click(null, null);
         }
 
         private void toolStripMenuItem7_DropDownOpening(object sender, EventArgs e)
@@ -442,7 +540,6 @@ namespace DreamScene2
             for (int i = 0; i < _recentFiles.Count; i++)
             {
                 string filePath = _recentFiles[i];
-                //string v = filePath.Truncate(50);
                 ToolStripMenuItem toolStripMenuItem = new ToolStripMenuItem($"{i + 1}. {filePath}");
                 toolStripMenuItem.Tag = filePath;
                 toolStripMenuItem.Click += ToolStripMenuItem_Click1;
@@ -466,7 +563,7 @@ namespace DreamScene2
 
         private void toolStripMenuItem9_Click(object sender, EventArgs e)
         {
-            button2_Click(null, null);
+            btnOpenFile_Click(null, null);
         }
 
         private void toolStripMenuItem12_Click(object sender, EventArgs e)
@@ -553,22 +650,16 @@ namespace DreamScene2
         {
             toolStripMenuItem18.DropDownItems.Clear();
 
-            string version = "";
-            try
-            {
-                version = CoreWebView2Environment.GetAvailableBrowserVersionString();
-            }
-            catch { }
-
-            if (string.IsNullOrEmpty(version))
-            {
-                toolStripMenuItem18.DropDownItems.Add(toolStripMenuItem19);
-            }
-            else
+            if (TryGetWebView2Version(out string version))
             {
                 toolStripMenuItem21.Text = $"WebView2 {version}";
                 toolStripMenuItem18.DropDownItems.Add(toolStripMenuItem21);
+                toolStripMenuItem18.DropDownItems.Add(toolStripMenuItem26);
                 toolStripMenuItem18.DropDownItems.Add(toolStripMenuItem20);
+            }
+            else
+            {
+                toolStripMenuItem18.DropDownItems.Add(toolStripMenuItem19);
             }
         }
 
@@ -610,6 +701,38 @@ namespace DreamScene2
                     timer1.Enabled = false;
                     if (!_isPlaying) PlayVideo();
                 }
+            }
+        }
+
+        private void toolStripMenuItem26_Click(object sender, EventArgs e)
+        {
+            _settings.DisableWebSecurity = toolStripMenuItem26.Checked = !toolStripMenuItem26.Checked;
+        }
+
+        private void toolStripMenuItem13_Click(object sender, EventArgs e)
+        {
+            PInvoke.DS2_ToggleShowDesktopIcons();
+        }
+
+        private void toolStripMenuItem27_Click(object sender, EventArgs e)
+        {
+            _settings.DesktopInteraction = toolStripMenuItem27.Checked = !toolStripMenuItem27.Checked;
+            if (_webWindow != null)
+            {
+                if (_settings.DesktopInteraction)
+                    ForwardMessage();
+                else
+                    PInvoke.DS2_EndForwardMouseKeyboardMessage();
+            }
+        }
+
+        private void toolStripMenuItem28_Click(object sender, EventArgs e)
+        {
+            Type shellType = Type.GetTypeFromProgID("Shell.Application");
+            if (shellType != null)
+            {
+                object shellObject = Activator.CreateInstance(shellType);
+                shellType.InvokeMember("ToggleDesktop", System.Reflection.BindingFlags.InvokeMethod, null, shellObject, null);
             }
         }
 
